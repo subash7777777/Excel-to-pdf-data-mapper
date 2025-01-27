@@ -1,174 +1,126 @@
 import streamlit as st
-import pdfrw
 import pandas as pd
-from typing import Dict, Any
-import logging
-import io
+from io import BytesIO
 import zipfile
-from datetime import datetime
+import datetime
+import pdfrw
 
 class PDFFormFiller:
-    def __init__(self):
-        """Initialize the PDF Form Filler"""
-        # PDF form field constants
-        self.ANNOT_KEY = '/Annots'
-        self.ANNOT_FIELD_KEY = '/T'
-        self.ANNOT_FORM_KEY = '/FT'
-        self.ANNOT_FORM_TEXT = '/Tx'
-        self.ANNOT_FORM_BUTTON = '/Btn'
-        self.SUBTYPE_KEY = '/Subtype'
-        self.WIDGET_SUBTYPE_KEY = '/Widget'
-        
-        # Set up logging
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
+  def __init__(self):
+    self.ANNOT_KEY = '/Annots'
+    self.ANNOT_FIELD_KEY = '/T'
+    self.ANNOT_FORM_KEY = '/FT'
+    self.ANNOT_FORM_TEXT = '/Tx'
+    self.ANNOT_FORM_BUTTON = '/Btn'
+    self.SUBTYPE_KEY = '/Subtype'
+    self.WIDGET_SUBTYPE_KEY = '/Widget'
 
-    def get_pdf_fields(self, pdf_template):
-        """Get all field names from the PDF template"""
-        try:
-            fields = set()
-            for page in pdf_template.pages:
-                if page[self.ANNOT_KEY]:
-                    for annotation in page[self.ANNOT_KEY]:
-                        if annotation[self.ANNOT_FIELD_KEY]:
-                            if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
-                                key = annotation[self.ANNOT_FIELD_KEY][1:-1]
-                                fields.add(key)
-            return sorted(list(fields))
-        except Exception as e:
-            self.logger.error(f"Error getting PDF fields: {str(e)}")
-            raise
+  def upload_files(self):
+    uploaded_excel = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
+    if uploaded_excel:
+      try:
+        self.excel_data = pd.read_excel(uploaded_excel)
+        st.success(f"Excel file uploaded: {uploaded_excel.name}")
+      except Exception as e:
+        st.error(f"Error reading Excel file: {e}")
 
-    def fill_pdf_form(self, template, row_data: Dict[str, Any]) -> pdfrw.PdfReader:
-        """Fill a single PDF form with data from one Excel row."""
+    uploaded_pdf = st.file_uploader("Upload PDF Template", type="pdf")
+    if uploaded_pdf:
+      try:
+        self.pdf_template_bytes = uploaded_pdf.read()
+        self.pdf_template = pdfrw.PdfReader(BytesIO(self.pdf_template_bytes))
+        st.success(f"PDF template uploaded: {uploaded_pdf.name}")
+        self.print_pdf_fields()
+      except Exception as e:
+        st.error(f"Error reading PDF template: {e}")
+
+  def print_pdf_fields(self):
+    if self.pdf_template:
+      fields = set()
+      for page in self.pdf_template.pages:
+        if page[self.ANNOT_KEY]:
+          for annotation in page[self.ANNOT_KEY]:
+            if annotation[self.ANNOT_FIELD_KEY]:
+              if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+                key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+                fields.add(key)
+      st.write("PDF form fields found:")
+      st.write(", ".join(sorted(fields)))
+
+      if self.excel_data is not None:
+        st.write("\nExcel columns found:")
+        st.write(", ".join(self.excel_data.columns))
+
+  def fill_pdf_form(self, row_data):
+    template = pdfrw.PdfReader(BytesIO(self.pdf_template_bytes))
+    for page in template.pages:
+      if page[self.ANNOT_KEY]:
+        for annotation in page[self.ANNOT_KEY]:
+          if annotation[self.ANNOT_FIELD_KEY]:
+            if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+              key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+              if key in row_data:
+                field_value = str(row_data[key])
+                if pd.isna(field_value) or field_value.lower() == 'nan':
+                  field_value = ''
+
+                if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
+                  annotation.update(pdfrw.PdfDict(V=field_value, AP=field_value))
+                elif annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_BUTTON:
+                  annotation.update(pdfrw.PdfDict(V=pdfrw.PdfName(field_value), AS=pdfrw.PdfName(field_value)))
+      annotation.update(pdfrw.PdfDict(Ff=1))
+    template.Root.AcroForm.update(pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true')))
+    return template
+
+  def process_all_records(self):
+    if self.excel_data is None or self.pdf_template is None:
+      st.error("Please upload both Excel file and PDF template.")
+      return
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"filled_forms_{timestamp}.zip"
+
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+      successful_count = 0
+      failed_count = 0
+
+      for index, row in self.excel_data.iterrows():
         try:
-            for page in template.pages:
-                if page[self.ANNOT_KEY]:
-                    for annotation in page[self.ANNOT_KEY]:
-                        if annotation[self.ANNOT_FIELD_KEY]:
-                            if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
-                                key = annotation[self.ANNOT_FIELD_KEY][1:-1]
-                                
-                                if key in row_data:
-                                    field_value = str(row_data[key])
-                                    if pd.isna(field_value) or field_value.lower() == 'nan':
-                                        field_value = ''
-                                    
-                                    if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
-                                        annotation.update(pdfrw.PdfDict(
-                                            V=field_value,
-                                            AP=field_value
-                                        ))
-                                    elif annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_BUTTON:
-                                        annotation.update(pdfrw.PdfDict(
-                                            V=pdfrw.PdfName(field_value),
-                                            AS=pdfrw.PdfName(field_value)
-                                        ))
-                                    
-                                    annotation.update(pdfrw.PdfDict(Ff=1))
-            
-            template.Root.AcroForm.update(
-                pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true'))
-            )
-            
-            return template
-            
+          identifier = row.get('Account_ID', index) 
+          pdf_filename = f"filled_form_{identifier}.pdf"
+          filled_pdf = self.fill_pdf_form(row.to_dict())
+          pdf_buffer = BytesIO()
+          pdfrw.PdfWriter().write(pdf_buffer, filled_pdf)
+          pdf_bytes = pdf_buffer.getvalue()
+          zip_file.writestr(pdf_filename, pdf_bytes)
+          successful_count += 1
+          st.write(f"Processed record {index + 1}/{len(self.excel_data)}: {pdf_filename}")
         except Exception as e:
-            self.logger.error(f"Error filling PDF form: {str(e)}")
-            raise
+          failed_count += 1
+          st.error(f"Error processing record {index}: {str(e)}")
+
+    zip_buffer.seek(0)
+    zip_content = zip_buffer.getvalue()
+
+    st.download_button(
+        label="Download Filled Forms",
+        data=zip_content,
+        file_name=zip_filename,
+        mime='application/zip'
+    )
+
+    st.write(f"\nProcessing complete!")
+    st.write(f"Successfully processed: {successful_count} records")
+    st.write(f"Failed to process: {failed_count} records")
 
 def main():
-    try:
-        st.set_page_config(page_title="PDF Form Filler", page_icon="📄")
-        
-        st.title("PDF Form Filler")
-        st.write("Upload your Excel file and PDF template to generate filled forms.")
-        
-        # Initialize PDF Form Filler
-        pdf_filler = PDFFormFiller()
-        
-        # File uploaders
-        excel_file = st.file_uploader("Upload Excel File", type=['xlsx', 'xls'])
-        pdf_template = st.file_uploader("Upload PDF Template", type=['pdf'])
-        
-        if excel_file and pdf_template:
-            # Read the files
-            try:
-                df = pd.read_excel(excel_file)
-                template = pdfrw.PdfReader(pdf_template)
-                
-                # Display field information
-                st.write("### PDF Fields and Excel Columns")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("PDF Form Fields:")
-                    pdf_fields = pdf_filler.get_pdf_fields(template)
-                    st.write(", ".join(pdf_fields))
-                
-                with col2:
-                    st.write("Excel Columns:")
-                    st.write(", ".join(df.columns))
-                
-                if st.button("Process Files"):
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    # Create ZIP file in memory
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                        successful_count = 0
-                        failed_count = 0
-                        
-                        for index, row in df.iterrows():
-                            try:
-                                # Update progress
-                                progress = (index + 1) / len(df)
-                                progress_bar.progress(progress)
-                                status_text.text(f"Processing record {index + 1}/{len(df)}")
-                                
-                                # Create filename
-                                identifier = row.get('Account_ID', index)
-                                pdf_filename = f"filled_form_{identifier}.pdf"
-                                
-                                # Fill the PDF
-                                filled_pdf = pdf_filler.fill_pdf_form(pdfrw.PdfReader(pdf_template), row.to_dict())
-                                
-                                # Convert to bytes and add to ZIP
-                                pdf_buffer = io.BytesIO()
-                                pdfrw.PdfWriter().write(pdf_buffer, filled_pdf)
-                                zip_file.writestr(pdf_filename, pdf_buffer.getvalue())
-                                
-                                successful_count += 1
-                                
-                            except Exception as e:
-                                failed_count += 1
-                                st.error(f"Error processing record {index}: {str(e)}")
-                    
-                    # Prepare download
-                    zip_buffer.seek(0)
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Show completion status
-                    st.success(f"""
-                    Processing complete!
-                    - Successfully processed: {successful_count} records
-                    - Failed to process: {failed_count} records
-                    """)
-                    
-                    # Download button
-                    st.download_button(
-                        label="Download ZIP File",
-                        data=zip_buffer.getvalue(),
-                        file_name=f"filled_forms_{timestamp}.zip",
-                        mime="application/zip"
-                    )
-            
-            except Exception as e:
-                st.error(f"Error processing files: {str(e)}")
-    
-    except Exception as e:
-        st.error(f"Application error: {str(e)}")
+  st.title("PDF Form Filler")
+  filler = PDFFormFiller()
+  filler.upload_files()
+
+  if st.button("Process All Records"):
+    filler.process_all_records()
 
 if __name__ == "__main__":
-    main()
+  main()
