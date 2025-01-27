@@ -1,68 +1,164 @@
+
 import streamlit as st
+import pdfrw
 import pandas as pd
+from typing import Dict, Any
+import logging
+import io
+import zipfile
+from datetime import datetime
 
-def find_comparables(subject_property, dataset):
-    """
-    Finds the 5 most comparable properties for the given subject property,
-    prioritizing those with the closest market value and VPU/VPR.
+class PDFFormFiller:
+    def __init__(self):
+        """Initialize the PDF Form Filler"""
+        # PDF form field constants
+        self.ANNOT_KEY = '/Annots'
+        self.ANNOT_FIELD_KEY = '/T'
+        self.ANNOT_FORM_KEY = '/FT'
+        self.ANNOT_FORM_TEXT = '/Tx'
+        self.ANNOT_FORM_BUTTON = '/Btn'
+        self.SUBTYPE_KEY = '/Subtype'
+        self.WIDGET_SUBTYPE_KEY = '/Widget'
+        
+        # Set up logging
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
 
-    Args:
-        subject_property: A pandas Series representing the subject property.
-        dataset: The pandas DataFrame containing all properties.
+    def get_pdf_fields(self, pdf_template):
+        """Get all field names from the PDF template"""
+        fields = set()
+        for page in pdf_template.pages:
+            if page[self.ANNOT_KEY]:
+                for annotation in page[self.ANNOT_KEY]:
+                    if annotation[self.ANNOT_FIELD_KEY]:
+                        if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+                            key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+                            fields.add(key)
+        return sorted(list(fields))
 
-    Returns:
-        A DataFrame with the 5 most comparable properties.
-    """
-    # Filter based on conditions
-    filtered_df = dataset[
-        (dataset['Hotel Name'] != subject_property['Hotel Name']) &
-        (dataset['Property Address'] != subject_property['Property Address']) &
-        (dataset['Owner Name/ LLC Name'] != subject_property['Owner Name/ LLC Name']) &
-        (dataset['Owner Street Address'] != subject_property['Owner Street Address']) &
-        (dataset['Hotel Class'] == subject_property['Hotel Class']) &
-        (dataset['Type'] == 'Hotel') &
-        (dataset['Market Value-2024'] >= subject_property['Market Value-2024'] - 100000) &
-        (dataset['Market Value-2024'] <= subject_property['Market Value-2024'] + 100000) &
-        (dataset['VPR'] <= subject_property['VPR'] * 1.5)
-    ].copy()
-
-    # Calculate differences
-    filtered_df['Market_Value_Diff'] = abs(filtered_df['Market Value-2024'] - subject_property['Market Value-2024'])
-    filtered_df['VPU_VPR_Diff'] = abs(filtered_df['VPR'] - subject_property['VPR'])
-    filtered_df['Combined_Diff'] = filtered_df['Market_Value_Diff'] + filtered_df['VPU_VPR_Diff']
-
-    # Sort and get the top 5
-    filtered_df = filtered_df.sort_values(by=['Combined_Diff', 'Market_Value_Diff', 'VPU_VPR_Diff']).head(5)
-
-    return filtered_df
-
+    def fill_pdf_form(self, template, row_data: Dict[str, Any]) -> pdfrw.PdfReader:
+        """Fill a single PDF form with data from one Excel row."""
+        try:
+            for page in template.pages:
+                if page[self.ANNOT_KEY]:
+                    for annotation in page[self.ANNOT_KEY]:
+                        if annotation[self.ANNOT_FIELD_KEY]:
+                            if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+                                key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+                                
+                                if key in row_data:
+                                    field_value = str(row_data[key])
+                                    if pd.isna(field_value) or field_value.lower() == 'nan':
+                                        field_value = ''
+                                    
+                                    if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
+                                        annotation.update(pdfrw.PdfDict(
+                                            V=field_value,
+                                            AP=field_value
+                                        ))
+                                    elif annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_BUTTON:
+                                        annotation.update(pdfrw.PdfDict(
+                                            V=pdfrw.PdfName(field_value),
+                                            AS=pdfrw.PdfName(field_value)
+                                        ))
+                                    
+                                    annotation.update(pdfrw.PdfDict(Ff=1))
+            
+            template.Root.AcroForm.update(
+                pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true'))
+            )
+            
+            return template
+            
+        except Exception as e:
+            self.logger.error(f"Error filling PDF form: {str(e)}")
+            raise
 
 def main():
-    st.title("Hotel Comparable Analysis")
-
-    # File upload
-    uploaded_file = st.file_uploader("Upload your hotel data (CSV)", type="csv")
-
-    if uploaded_file is not None:
-        # Load data
-        data = pd.read_csv(uploaded_file)
-
-        # Select subject property
-        subject_index = st.slider("Select Subject Property Index", min_value=0, max_value=len(data)-1, step=1)
-        subject_property = data.iloc[subject_index]
-
-        # Display subject property
-        st.write("Subject Property:")
-        st.dataframe(subject_property.to_frame().T)
-
-        # Find comparables
-        comparables = find_comparables(subject_property, data)
-
-        # Display comparables
-        st.write("Comparable Properties:")
-        st.dataframe(comparables)
-
+    st.set_page_config(page_title="PDF Form Filler", page_icon="📄")
+    
+    st.title("PDF Form Filler")
+    st.write("Upload your Excel file and PDF template to generate filled forms.")
+    
+    # Initialize PDF Form Filler
+    pdf_filler = PDFFormFiller()
+    
+    # File uploaders
+    excel_file = st.file_uploader("Upload Excel File", type=['xlsx', 'xls'])
+    pdf_template = st.file_uploader("Upload PDF Template", type=['pdf'])
+    
+    if excel_file and pdf_template:
+        # Read the files
+        try:
+            df = pd.read_excel(excel_file)
+            template = pdfrw.PdfReader(pdf_template)
+            
+            # Display field information
+            st.write("### PDF Fields and Excel Columns")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("PDF Form Fields:")
+                pdf_fields = pdf_filler.get_pdf_fields(template)
+                st.write(", ".join(pdf_fields))
+            
+            with col2:
+                st.write("Excel Columns:")
+                st.write(", ".join(df.columns))
+            
+            if st.button("Process Files"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Create ZIP file in memory
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    successful_count = 0
+                    failed_count = 0
+                    
+                    for index, row in df.iterrows():
+                        try:
+                            # Update progress
+                            progress = (index + 1) / len(df)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Processing record {index + 1}/{len(df)}")
+                            
+                            # Create filename
+                            identifier = row.get('Account_ID', index)
+                            pdf_filename = f"filled_form_{identifier}.pdf"
+                            
+                            # Fill the PDF
+                            filled_pdf = pdf_filler.fill_pdf_form(pdfrw.PdfReader(pdf_template), row.to_dict())
+                            
+                            # Convert to bytes and add to ZIP
+                            pdf_buffer = io.BytesIO()
+                            pdfrw.PdfWriter().write(pdf_buffer, filled_pdf)
+                            zip_file.writestr(pdf_filename, pdf_buffer.getvalue())
+                            
+                            successful_count += 1
+                            
+                        except Exception as e:
+                            failed_count += 1
+                            st.error(f"Error processing record {index}: {str(e)}")
+                
+                # Prepare download
+                zip_buffer.seek(0)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Show completion status
+                st.success(f"""
+                Processing complete!
+                - Successfully processed: {successful_count} records
+                - Failed to process: {failed_count} records
+                """)
+                
+                # Download button
+                st.download_button(
+                    label="Download ZIP File",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"filled_forms_{timestamp}.zip",
+                    mime="application/zip"
+                )
 
 if __name__ == "__main__":
     main()
-
