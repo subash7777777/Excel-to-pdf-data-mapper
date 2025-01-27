@@ -17,11 +17,11 @@ class PDFFormFiller:
         self.WIDGET_SUBTYPE_KEY = '/Widget'
 
     def upload_files(self):
-        st.markdown("<h2 style='text-align: center;'>Upload Files</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center; font-family: Arial, sans-serif; color: #1E3A8A;'>Upload Files</h2>", unsafe_allow_html=True)
         
-        # Styling for file upload section
+        # Card-like UI for file upload section
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
             uploaded_excel = st.file_uploader("Upload Excel File", type=["xlsx", "xls"], label_visibility="collapsed")
             if uploaded_excel:
@@ -52,11 +52,11 @@ class PDFFormFiller:
                             if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
                                 key = annotation[self.ANNOT_FIELD_KEY][1:-1]
                                 fields.add(key)
-            st.markdown("<h4 style='text-align: center;'>PDF Form Fields</h4>", unsafe_allow_html=True)
+            st.markdown("<h4 style='text-align: center; font-family: Arial, sans-serif; color: #4B5563;'>PDF Form Fields</h4>", unsafe_allow_html=True)
             st.write(", ".join(sorted(fields)))
 
             if self.excel_data is not None:
-                st.markdown("<h4 style='text-align: center;'>Excel Columns</h4>", unsafe_allow_html=True)
+                st.markdown("<h4 style='text-align: center; font-family: Arial, sans-serif; color: #4B5563;'>Excel Columns</h4>", unsafe_allow_html=True)
                 st.write(", ".join(self.excel_data.columns))
 
     def fill_pdf_form(self, row_data):
@@ -111,7 +111,7 @@ class PDFFormFiller:
         zip_buffer.seek(0)
         zip_content = zip_buffer.getvalue()
 
-        st.markdown("<h3 style='text-align: center;'>Download Filled Forms</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; font-family: Arial, sans-serif; color: #10B981;'>Download Filled Forms</h3>", unsafe_allow_html=True)
         st.download_button(
             label="Download All Filled Forms",
             data=zip_content,
@@ -128,20 +128,27 @@ class PDFFormFiller:
 def main():
     st.markdown("""
     <style>
-    /* Custom Styles */
+    /* General App Styles */
+    body {
+        font-family: 'Arial', sans-serif;
+        background-color: #F3F4F6;
+    }
+    
+    /* Styling Buttons */
     .stButton button {
         background-color: #3498db;
         color: white;
         padding: 15px 25px;
         font-size: 16px;
-        border-radius: 8px;
+        border-radius: 10px;
         border: none;
         cursor: pointer;
-        transition: background-color 0.3s ease;
+        transition: transform 0.3s ease, background-color 0.3s ease;
     }
 
     .stButton button:hover {
         background-color: #2980b9;
+        transform: scale(1.05);
     }
 
     .stFileUploader {
@@ -150,6 +157,33 @@ def main():
         padding: 20px;
     }
 
+    /* Card-like UI */
+    .upload-card {
+        background-color: white;
+        border-radius: 10px;
+        padding: 30px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        margin: 10px;
+        transition: transform 0.3s ease;
+    }
+
+    .upload-card:hover {
+        transform: scale(1.03);
+    }
+
+    /* File upload */
+    .stFileUploader input[type="file"] {
+        background-color: #E5E7EB;
+        padding: 15px;
+        border-radius: 8px;
+        transition: background-color 0.3s ease;
+    }
+
+    .stFileUploader input[type="file"]:hover {
+        background-color: #D1D5DB;
+    }
+
+    /* Download Button */
     .stDownloadButton button {
         background-color: #27ae60;
         color: white;
@@ -158,21 +192,27 @@ def main():
         border-radius: 8px;
         border: none;
         cursor: pointer;
+        transition: background-color 0.3s ease, transform 0.3s ease;
     }
 
     .stDownloadButton button:hover {
         background-color: #2ecc71;
+        transform: scale(1.05);
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("PDF Form Filler")
+    st.title("💼 PDF Form Filler")
     filler = PDFFormFiller()
+
+    st.markdown("<div style='text-align: center;'><br></div>", unsafe_allow_html=True)
+
     filler.upload_files()
 
-    st.markdown("<div style='text-align: center;'><br><br></div>", unsafe_allow_html=True)
+    st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("Process All Records", use_container_width=True):
         filler.process_all_records()
 
 if __name__ == "__main__":
     main()
+
