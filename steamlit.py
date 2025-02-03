@@ -19,7 +19,8 @@ class PDFFormFiller:
         uploaded_excel = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
         if uploaded_excel:
             try:
-                self.excel_data = pd.read_excel(uploaded_excel)
+                # Read Excel data as strings (especially for zip codes)
+                self.excel_data = pd.read_excel(uploaded_excel, dtype=str)
                 st.success(f"Excel file uploaded: {uploaded_excel.name}")
             except Exception as e:
                 st.error(f"Error reading Excel file: {e}")
@@ -60,9 +61,11 @@ class PDFFormFiller:
                         if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
                             key = annotation[self.ANNOT_FIELD_KEY][1:-1]
                             if key in row_data:
-                                field_value = str(row_data[key])
-                                if pd.isna(field_value) or field_value.lower() == 'nan':
-                                    field_value = ''
+                                # Handle missing or invalid data gracefully
+                                field_value = str(row_data[key]) if pd.notna(row_data[key]) else ''
+                                # Ensure leading zeros for zip codes
+                                if key.lower() == 'zipcode':
+                                    field_value = field_value.zfill(5)
 
                                 if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
                                     annotation.update(pdfrw.PdfDict(V=field_value, AP=field_value))
@@ -99,7 +102,10 @@ class PDFFormFiller:
                         failed_count += 1
                         continue
 
-                    pdf_filename = f"{account_number}.pdf"
+                    # Ensure the account number is saved without decimals
+                    account_number_str = str(int(float(account_number))) if account_number.isdigit() else account_number
+                    pdf_filename = f"{account_number_str}.pdf"
+
                     filled_pdf = self.fill_pdf_form(row.to_dict())
                     pdf_buffer = BytesIO()
                     pdfrw.PdfWriter().write(pdf_buffer, filled_pdf)
