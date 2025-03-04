@@ -15,16 +15,12 @@ class PDFFormFiller:
         self.SUBTYPE_KEY = '/Subtype'
         self.WIDGET_SUBTYPE_KEY = '/Widget'
 
-        self.excel_data = None
-        self.pdf_template = None
-        self.pdf_template_bytes = None
-
     def upload_files(self):
         uploaded_excel = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
         if uploaded_excel:
             try:
-                self.excel_data = pd.read_excel(uploaded_excel, dtype=str)  # Read as string to avoid numeric issues
-                self.excel_data.columns = self.excel_data.columns.str.strip()  # Remove unwanted spaces in column names
+                # Read Excel data as strings (especially for zip codes)
+                self.excel_data = pd.read_excel(uploaded_excel, dtype=str)
                 st.success(f"Excel file uploaded: {uploaded_excel.name}")
             except Exception as e:
                 st.error(f"Error reading Excel file: {e}")
@@ -40,58 +36,51 @@ class PDFFormFiller:
                 st.error(f"Error reading PDF template: {e}")
 
     def print_pdf_fields(self):
-        """Extract and display form field names from the PDF."""
         if self.pdf_template:
             fields = set()
             for page in self.pdf_template.pages:
                 if page[self.ANNOT_KEY]:
                     for annotation in page[self.ANNOT_KEY]:
-                        if annotation[self.ANNOT_FIELD_KEY] and annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
-                            key = annotation[self.ANNOT_FIELD_KEY][1:-1].strip()  # Remove leading/trailing spaces
-                            fields.add(key)
-
+                        if annotation[self.ANNOT_FIELD_KEY]:
+                            if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+                                key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+                                fields.add(key)
             st.write("PDF form fields found:")
-            st.write([repr(field) for field in sorted(fields)])  # Debug: Show exact field names
+            st.write(", ".join(sorted(fields)))
 
             if self.excel_data is not None:
                 st.write("\nExcel columns found:")
-                st.write([repr(col) for col in self.excel_data.columns])  # Debug: Show exact column names
+                st.write(", ".join(self.excel_data.columns))
 
     def fill_pdf_form(self, row_data):
-        """Fill a PDF template with row data from Excel."""
         template = pdfrw.PdfReader(BytesIO(self.pdf_template_bytes))
-
         for page in template.pages:
             if page[self.ANNOT_KEY]:
                 for annotation in page[self.ANNOT_KEY]:
-                    if annotation[self.ANNOT_FIELD_KEY] and annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
-                        key = annotation[self.ANNOT_FIELD_KEY][1:-1].strip()  # Trim spaces
-                        
-                        if key in row_data:
-                            field_value = str(row_data.get(key, '')).strip() if pd.notna(row_data.get(key, '')) else ''
+                    if annotation[self.ANNOT_FIELD_KEY]:
+                        if annotation[self.SUBTYPE_KEY] == self.WIDGET_SUBTYPE_KEY:
+                            key = annotation[self.ANNOT_FIELD_KEY][1:-1]
+                            if key in row_data:
+                                # Handle missing or invalid data gracefully
+                                field_value = str(row_data[key]) if pd.notna(row_data[key]) else ''
+                                # Ensure leading zeros for zip codes
+                                if key.lower() == 'zipcode':
+                                    field_value = field_value.zfill(5)
 
-                            # Ensure zip codes or other numerical fields maintain format
-                            if key.lower() == 'zipcode':
-                                field_value = field_value.zfill(5)
-
-                            # Update text fields properly
-                            if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
-                                annotation.update(pdfrw.PdfDict(V=field_value))
-                            elif annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_BUTTON:
-                                annotation.update(pdfrw.PdfDict(V=pdfrw.PdfName(field_value), AS=pdfrw.PdfName(field_value)))
-
-                            st.write(f"Mapping: {key} -> {field_value}")  # Debug: Show field mapping progress
-
-        # Ensure form updates are displayed properly
+                                if annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_TEXT:
+                                    annotation.update(pdfrw.PdfDict(V=field_value, AP=field_value))
+                                elif annotation[self.ANNOT_FORM_KEY] == self.ANNOT_FORM_BUTTON:
+                                    annotation.update(pdfrw.PdfDict(V=pdfrw.PdfName(field_value), AS=pdfrw.PdfName(field_value)))
+                annotation.update(pdfrw.PdfDict(Ff=1))
         template.Root.AcroForm.update(pdfrw.PdfDict(NeedAppearances=pdfrw.PdfObject('true')))
         return template
 
     def process_all_records(self):
-        """Process all records from Excel and generate filled PDFs."""
         if self.excel_data is None or self.pdf_template is None:
             st.error("Please upload both Excel file and PDF template.")
             return
 
+        # Ensure the 'Account number' column exists in the Excel file
         if 'Account number' not in self.excel_data.columns:
             st.error("The Excel file must contain a column named 'Account number'.")
             return
@@ -106,24 +95,22 @@ class PDFFormFiller:
 
             for index, row in self.excel_data.iterrows():
                 try:
-                    account_number = row.get('Account number', '').strip()
-                    if not account_number:
+                    # Use 'Account number' as the filename identifier
+                    account_number = row['Account number']
+                    if pd.isna(account_number):
                         st.warning(f"Missing 'Account number' for row {index + 1}. Skipping.")
                         failed_count += 1
                         continue
 
-                    # Ensure account number is formatted correctly
+                    # Ensure the account number is saved without decimals
                     account_number_str = str(int(float(account_number))) if account_number.isdigit() else account_number
                     pdf_filename = f"{account_number_str}.pdf"
 
                     filled_pdf = self.fill_pdf_form(row.to_dict())
-
-                    # Save the modified PDF
                     pdf_buffer = BytesIO()
                     pdfrw.PdfWriter().write(pdf_buffer, filled_pdf)
                     pdf_bytes = pdf_buffer.getvalue()
                     zip_file.writestr(pdf_filename, pdf_bytes)
-
                     successful_count += 1
                     st.write(f"Processed record {index + 1}/{len(self.excel_data)}: {pdf_filename}")
                 except Exception as e:
